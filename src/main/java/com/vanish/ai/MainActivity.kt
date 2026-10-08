@@ -1,176 +1,130 @@
 package com.vanish.ai
 
+import android.Manifest
 import android.app.Activity
-import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
-import android.speech.RecognizerIntent
-import android.speech.tts.TextToSpeech
-import android.speech.tts.Voice
+import android.provider.Settings
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
-import java.util.Locale
 
-class MainActivity : Activity(), TextToSpeech.OnInitListener {
+class MainActivity : Activity() {
 
-    private lateinit var tts: TextToSpeech
     private lateinit var status: TextView
-    private var ttsReady = false
-
-    private var voices: List<Voice> = emptyList()
-    private var voiceIndex = 0
-
-    companion object {
-        private const val REQUEST_SPEECH = 100
-    }
+    private lateinit var button: Button
+    private lateinit var keyInput: EditText
+    private var wantStart = false
+    private var askedPerms = false
+    private var askedNotif = false
+    private var askedOverlay = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
         status = findViewById(R.id.status)
-        val listenButton = findViewById<Button>(R.id.listenButton)
-
-        tts = TextToSpeech(this, this)
-        listenButton.setOnClickListener { listen() }
+        button = findViewById(R.id.listenButton)
+        keyInput = findViewById(R.id.apiKey)
+        button.setOnClickListener { toggle() }
+        showState(VanishService.running)
     }
 
-    // ---------- TTS (Hinglish = Hindi voice, mixed Hindi + English words) ----------
-    override fun onInit(result: Int) {
-        if (result != TextToSpeech.SUCCESS) {
-            Toast.makeText(this, "Text-to-speech start nahi hua", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val lang = tts.setLanguage(Locale("hi", "IN"))
-        if (lang == TextToSpeech.LANG_MISSING_DATA || lang == TextToSpeech.LANG_NOT_SUPPORTED) {
-            Toast.makeText(this, "Hindi voice install karo (Settings > Text-to-speech)", Toast.LENGTH_LONG).show()
-            try {
-                startActivity(Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA))
-            } catch (_: Exception) {}
-            tts.setLanguage(Locale("en", "IN"))
-        }
-
-        loadVoices()
-        applyVoice(0)
-        tts.setPitch(0.5f)
-        tts.setSpeechRate(0.78f)
-        ttsReady = true
-        speak("वैनिश हाज़िर है, भाई। बोल, क्या करना है?")
+    override fun onResume() {
+        super.onResume()
+        if (wantStart) proceed() else showState(VanishService.running)
     }
 
-    private fun loadVoices() {
-        val all = tts.voices?.toList() ?: emptyList()
-        voices = all
-            .filter { it.locale.language == "hi" || it.locale.country == "IN" }
-            .sortedWith(
-                compareByDescending<Voice> { it.locale.language == "hi" }
-                    .thenByDescending { isMaleVoice(it) }
-                    .thenBy { it.isNetworkConnectionRequired }
-                    .thenBy { it.name }
-            )
-    }
+    private fun prefs() = getSharedPreferences("vanish", MODE_PRIVATE)
 
-    private fun isMaleVoice(v: Voice): Boolean {
-        val n = v.name.lowercase()
-        return n.contains("male") && !n.contains("female") || n.contains("-hid-") || n.contains("-hie-")
-    }
+    private fun hasKey() = !prefs().getString("api_key", "").isNullOrBlank()
 
-    private fun applyVoice(index: Int) {
-        if (voices.isEmpty()) return
-        voiceIndex = ((index % voices.size) + voices.size) % voices.size
-        tts.voice = voices[voiceIndex]
-        status.text = "Voice ${voiceIndex + 1}/${voices.size}: ${voices[voiceIndex].name}"
-    }
-
-    private fun nextVoice() {
-        if (voices.isEmpty()) {
-            speak("Doosri voice available nahi hai.")
-            return
-        }
-        applyVoice(voiceIndex + 1)
-        speak("यह मेरी नई आवाज़ है।")
-    }
-
-    // ---------- Speech recognition ----------
-    private fun listen() {
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "hi-IN")
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "Boliye...")
-        }
-        try {
-            startActivityForResult(intent, REQUEST_SPEECH)
-        } catch (e: ActivityNotFoundException) {
-            speak("Speech recognition is device par available nahi hai.")
+    private fun saveKey() {
+        val k = keyInput.text.toString().trim()
+        if (k.isNotEmpty()) {
+            prefs().edit().putString("api_key", k).apply()
+            keyInput.setText("")
+            Toast.makeText(this, "Key save ho gayi ✅", Toast.LENGTH_SHORT).show()
         }
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_SPEECH && resultCode == RESULT_OK) {
-            val results = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-            val command = results?.firstOrNull()?.lowercase() ?: return
-            status.text = command
-            handleCommand(command)
-        }
-    }
+    private fun granted(p: String) =
+        checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
 
-    private fun has(command: String, vararg keys: String) = keys.any { command.contains(it) }
-
-    private fun handleCommand(command: String) {
-        when {
-            has(command, "hello", "hey vanish", "hi vanish", "हेलो", "हैलो", "नमस्ते", "namaste") ->
-                speak("क्या हाल है भाई? वैनिश ऑनलाइन है।")
-
-            has(command, "change voice", "next voice", "awaaz badlo", "awaz badlo", "आवाज़ बदलो", "आवाज बदलो", "वॉइस बदलो") ->
-                nextVoice()
-
-            has(command, "youtube", "यूट्यूब", "यू ट्यूब") -> openApp("com.google.android.youtube")
-            has(command, "chrome", "क्रोम") -> openApp("com.android.chrome")
-            has(command, "instagram", "इंस्टाग्राम", "insta", "इंस्टा") -> openApp("com.instagram.android")
-            has(command, "whatsapp", "व्हाट्सएप", "व्हाट्सऐप", "वॉट्सऐप", "वाट्सएप") -> openApp("com.whatsapp")
-
-            has(command, "morning", "subah", "सुबह", "गुड मॉर्निंग", "good morning") ->
-                speak("सुबह हो गई भाई। उठ जा, आज का दिन तेरा है।")
-
-            has(command, "skincare", "स्किनकेयर", "स्किन केयर") ->
-                speak("मॉर्निंग स्किनकेयर: पहले क्लींज़र, फिर मॉइस्चराइज़र, और आखिर में सनस्क्रीन।")
-
-            has(command, "study", "padhai", "स्टडी", "पढ़ाई", "पढाई") ->
-                speak("स्टडी मोड ऑन। अब सिर्फ़ फोकस, कोई बहाना नहीं।")
-
-            has(command, "trading", "ट्रेडिंग") ->
-                speak("ट्रेडिंग लर्निंग मोड ऑन। मैं चार्ट और इंडिकेटर समझने में आपकी मदद करूँगा।")
-
-            else -> speak("मैंने सुना, लेकिन यह कमांड अभी सेट नहीं है।")
-        }
-    }
-
-    private fun openApp(packageName: String) {
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        if (launchIntent != null) {
-            speak("लो, खोल दिया।")
-            startActivity(launchIntent)
+    private fun toggle() {
+        if (VanishService.running) {
+            stopService(Intent(this, VanishService::class.java))
+            wantStart = false
+            showState(false)
         } else {
-            speak("यह ऐप इंस्टॉल नहीं है।")
+            saveKey()
+            wantStart = true
+            askedPerms = false
+            proceed()
         }
     }
 
-    private fun speak(text: String) {
-        if (ttsReady) {
-            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "VANISH")
+    private fun proceed() {
+        if (!wantStart) return
+
+        val need = listOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.READ_CONTACTS,
+            Manifest.permission.CALL_PHONE
+        ).filter { !granted(it) }
+
+        if (need.isNotEmpty() && !askedPerms) {
+            askedPerms = true
+            requestPermissions(need.toTypedArray(), 1)
+            return
         }
+        if (!granted(Manifest.permission.RECORD_AUDIO)) {
+            wantStart = false
+            status.text = "Mic permission zaroori hai. Settings > Apps > Vanish > Permissions mein Allow karo."
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 && !askedNotif &&
+            !granted(Manifest.permission.POST_NOTIFICATIONS)
+        ) {
+            askedNotif = true
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
+            return
+        }
+        if (!Settings.canDrawOverlays(this) && !askedOverlay) {
+            askedOverlay = true
+            Toast.makeText(this, "Vanish ke liye 'Display over other apps' ON karo", Toast.LENGTH_LONG).show()
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+            )
+            return
+        }
+
+        wantStart = false
+        val svc = Intent(this, VanishService::class.java)
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
+        showState(true)
     }
 
-    override fun onDestroy() {
-        if (::tts.isInitialized) {
-            tts.stop()
-            tts.shutdown()
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        proceed()
+    }
+
+    private fun showState(on: Boolean) {
+        keyInput.hint = if (hasKey()) "Key saved ✅ (badalni ho to nayi paste karo)" else "API key yahan paste karo"
+        if (on) {
+            status.text = "Vanish chalu hai ✅\n\nBolo: \"Hey Vanish\" aur phir kuch bhi pucho,\nya \"mummy ko call karo\", \"free fire max\""
+            button.text = "BAND KARO"
+        } else {
+            status.text = "Vanish band hai"
+            button.text = "VANISH CHALU KARO"
         }
-        super.onDestroy()
     }
 }
